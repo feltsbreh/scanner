@@ -1,10 +1,5 @@
 """
-Swing Scanner + Streamlit UI + Russell2000 Universe Option (via Barchart IWM constituents)
-
-Usage:
-  1) pip install -r requirements.txt
-  2) streamlit run app.py
-  3) open http://localhost:8501 in your browser
+Swing Scanner + Streamlit UI + Russell2000 Universe Option (auto CSV)
 """
 
 import streamlit as st
@@ -12,15 +7,19 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
-import requests
-from io import StringIO
-from datetime import datetime, timedelta
+import os
 import math
+import requests
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Swing Scanner", layout="wide")
-
 DEFAULT_TICKERS = ["AAPL", "MSFT", "AMD", "NVDA", "INTC"]
+RUSSSELL_CSV = "russell2000.csv"
+
+# ---------------------------
+# Data Fetching
+# ---------------------------
 
 @st.cache_data(ttl=300)
 def fetch_history(ticker: str, days: int = 400):
@@ -107,40 +106,48 @@ def run_scan(tickers, lookback_days, atr_multiplier, min_avg_volume, account_siz
     df = df.sort_values(by=["buy", "avg_vol_30"], ascending=[False, False]).reset_index(drop=True)
     return df
 
-def fetch_russell2000_tickers_from_iwm_barchart(max_tickers=2000):
-    """
-    Fetch Russell 2000 universe tickers via Barchart IWM constituents page.
-    """
-    url = "https://www.barchart.com/etfs-funds/quotes/IWM/constituents"
+# ---------------------------
+# Russell2000 CSV Handling
+# ---------------------------
+
+def build_russell_csv(path=RUSSSELL_CSV):
+    """Scrape tickers from SureDividend and save locally."""
+    url = "https://www.suredividend.com/russell-2000-stocks/"
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        # Find table of constituents
-        table = soup.find("table", {"class": "datatable"})
+        table = soup.find("table")
         if table is None:
-            st.warning("Could not find constituents table on Barchart page.")
+            st.warning("Could not find table on SureDividend page.")
             return []
         df = pd.read_html(str(table))[0]
-        if "Symbol" in df.columns:
-            tickers = df["Symbol"].dropna().tolist()
-        elif "Ticker" in df.columns:
-            tickers = df["Ticker"].dropna().tolist()
-        else:
-            st.warning("Constituents table does not contain Symbol/Ticker column.")
-            return []
-        tickers = [t.strip().upper() for t in tickers if isinstance(t, str)]
-        return tickers[:max_tickers]
+        tickers = df["Ticker"].dropna().astype(str).str.upper().tolist()
+        pd.DataFrame({"Ticker": tickers}).to_csv(path, index=False)
+        return tickers
     except Exception as e:
         st.warning(f"Failed to fetch Russell2000 tickers: {e}")
         return []
 
-# -------------------------
-# Streamlit UI
-# -------------------------
+def load_russell_csv(path=RUSSSELL_CSV, max_tickers=2000):
+    if os.path.exists(path):
+        try:
+            df = pd.read_csv(path, usecols=["Ticker"])
+            tickers = df["Ticker"].dropna().astype(str).str.upper().tolist()
+            return tickers[:max_tickers]
+        except Exception as e:
+            st.warning(f"Failed to load local CSV: {e}")
+            return []
+    else:
+        return build_russell_csv(path)[:max_tickers]
 
-st.title("🔎 Swing Scanner — SMA / RSI / ATR (with Russell2000 Universe Option)")
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+
+st.title("🔎 Swing Scanner — SMA / RSI / ATR (Russell2000 CSV)")
 st.sidebar.header("Scanner parameters")
+
 lookback_days = st.sidebar.number_input("Historical lookback (days)", value=400, min_value=120, max_value=2000, step=30)
 atr_multiplier = st.sidebar.number_input("ATR multiplier for stop", value=1.5, min_value=0.5, step=0.1, format="%.2f")
 min_avg_volume = st.sidebar.number_input("Min avg daily volume (0 to disable)", value=100000, step=1000)
@@ -148,13 +155,13 @@ account_size = st.sidebar.number_input("Account size (USD)", value=10000.0, min_
 risk_pct = st.sidebar.number_input("Risk percent per trade (%)", value=1.0, min_value=0.1, max_value=20.0, step=0.1, format="%.2f")
 max_tickers = st.sidebar.number_input("Max tickers to scan", value=500, min_value=50, max_value=3000, step=50)
 
-use_russell2000 = st.sidebar.checkbox("Use Russell2000 universe (via IWM constituents)", value=False)
+use_russell2000 = st.sidebar.checkbox("Use Russell2000 universe (auto CSV)", value=False)
 run_button = st.sidebar.button("Run scan")
 
 st.header("Tickers / Universe Selection")
 if use_russell2000:
-    tickers = fetch_russell2000_tickers_from_iwm_barchart(max_tickers)
-    st.write(f"Using {len(tickers)} tickers from Russell2000 universe.")
+    tickers = load_russell_csv(max_tickers=max_tickers)
+    st.write(f"Loaded {len(tickers)} tickers from Russell2000 CSV.")
 else:
     uploaded = st.file_uploader("Upload CSV (one ticker per line)", type=["csv","txt"])
     paste = st.text_area("Or paste tickers (one per line)", height=120, value="\n".join(DEFAULT_TICKERS))
@@ -164,7 +171,7 @@ else:
             df_in = pd.read_csv(uploaded, header=None)
             tickers = df_in.iloc[:,0].astype(str).tolist()
         except Exception:
-            txt = uploaded.getvalue().decode("utf‑8")
+            txt = uploaded.getvalue().decode("utf-8")
             tickers = [line.strip() for line in txt.splitlines() if line.strip()]
     elif paste:
         tickers = [line.strip().upper() for line in paste.splitlines() if line.strip()]
@@ -183,7 +190,7 @@ if run_button:
             buys = df_res[df_res["buy"] == True]
             st.markdown(f"### Results — {len(df_res)} scanned | {len(buys)} buy signals")
             st.dataframe(df_res, height=480)
-            csv = df_res.to_csv(index=False).encode("utf‑8")
+            csv = df_res.to_csv(index=False).encode("utf-8")
             st.download_button("Download CSV", data=csv, file_name="scanner_results.csv", mime="text/csv")
             if len(buys) > 0:
                 st.markdown("#### Buy candidates")
@@ -192,12 +199,10 @@ if run_button:
 st.markdown("---")
 st.markdown("### Notes & Next Steps")
 st.markdown("""
-- If you enable “Use Russell2000 universe”, the ticker list is fetched from Barchart IWM constituents.
+- If you enable “Use Russell2000 universe”, tickers are fetched from SureDividend and stored locally.
+- The CSV will be reused next time to speed up loading.
 - Scanning many tickers (>500) may take time or hit data limits.
-- Stop‑loss is ATR‑based: stop = price − ATR * multiplier.
+- Stop-loss is ATR-based: stop = price − ATR * multiplier.
 - Position sizing is driven by your account size & risk percent.
-- Always back‑test before relying on live signals.
+- Always back-test before relying on live signals.
 """)
-
-
-
