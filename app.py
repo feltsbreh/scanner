@@ -1,3 +1,40 @@
+import pandas as pd
+import requests
+from io import StringIO
+
+def fetch_russell2000_tickers_from_iwm():
+    """
+    Fetch tickers of Russell 2000 via IWM ETF holdings CSV (or similar fund).
+    Returns list of tickers (strings).
+    """
+    # Example URL: (you’ll need to find a current URL that provides CSV of holdings for IWM)
+    csv_url = "https://www.ishares.com/us/literature/fact-sheet/iwm‑fund‑holdings.csv"
+    try:
+        resp = requests.get(csv_url, timeout=10)
+        resp.raise_for_status()
+        df = pd.read_csv(StringIO(resp.text))
+        # Assume column "Ticker" or "Symbol" exists
+        tickers = df["Ticker"].dropna().unique().tolist()
+        return [t.strip().upper() for t in tickers if isinstance(t, str)]
+    except Exception as e:
+        print("Failed to fetch IWM holdings:", e)
+        return []
+
+# In your Streamlit UI, allow an option “Use Russell 2000 universe”:
+use_russell2000 = st.sidebar.checkbox("Use Russell 2000 universe (via IWM holdings)", value=False)
+
+if use_russell2000:
+    tickers = fetch_russell2000_tickers_from_iwm()
+else:
+    # existing tickers input logic
+    ...
+
+# Then proceed to run_scan(tickers, …)
+
+
+
+
+
 """
 Simple Swing Scanner + Streamlit UI
 
